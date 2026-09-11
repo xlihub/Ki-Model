@@ -116,6 +116,8 @@ gh workflow run ki-model-release.yml --repo xlihub/Ki-Model --ref product/main -
 
 上传步骤不覆盖已有资产：Draft 中的同名文件须与新产物逐字节一致，否则停止并核查该 Draft 的已有产物。公开后的 Release 不允许通过此流程重新上传；源码或配置修正按新产品版本发布。`.github/ki-model-metadata.py` 只处理上述发布流程所需的版本映射与来源清单，常规上游同步仍使用维护技能和 Git。
 
+Draft 查询使用支持草稿的 `gh release view`；GitHub 的按 tag 查询 Release REST 接口只返回已公开版本。读取 Draft 的 job 需要 `contents: write`，因为 GitHub 只向有 push 权限的调用者提供草稿。若失败仅涉及 Actions 权限或 Release API 调用，且 Draft 尚无资产，可以通过普通 PR 修复 workflow 后从 product/main 重新 dispatch 原 tag；必须保留 tag、SDK 源码、版本映射、构建参数和检查要求，并记录修复 PR 与新 run。涉及这些发布内容或已有产物的变化，仍按新产品版本处理。
+
 ## 中断恢复与下游交接
 
 按 PR、run 或 tag 恢复时重新读取 repository、base/head SHA、workflow、attempt、checks、版本映射和 Release，不依赖旧会话。存在冲突时保留 merge 状态并交给 resolving-merge-conflicts；确定性失败通过修复 PR 处理，同一 commit 的瞬时失败才考虑经确认重跑。已公开版本需要内容修正时发布新产品版本。

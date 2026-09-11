@@ -27,6 +27,9 @@ jobs:
     name: Verify fixed SDK source
     if: github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main'
     runs-on: ubuntu-latest
+    # GitHub only exposes draft releases to callers with push access.
+    permissions:
+      contents: write
     outputs:
       version: ${{ steps.metadata.outputs.version }}
       commit: ${{ steps.metadata.outputs.commit }}
@@ -52,8 +55,8 @@ jobs:
           expected="$(jq -er '.peeledCommit' ki-model-upstream.json)"
           git fetch --no-tags https://github.com/iOfficeAI/aionrs.git "refs/tags/$upstream_tag"
           test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$expected"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
-          jq -e --arg tag "$RELEASE_TAG" '.draft == true and .prerelease == false and .tag_name == $tag' /tmp/release.json
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease,tagName > /tmp/release.json
+          jq -e --arg tag "$RELEASE_TAG" '.isDraft == true and .isPrerelease == false and .tagName == $tag' /tmp/release.json
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
       - name: Setup vx
@@ -220,8 +223,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
-          jq -e '.draft == true' /tmp/release.json
+          gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets > /tmp/release.json
+          jq -e '.isDraft == true' /tmp/release.json
           mkdir existing
           for asset in artifacts/*; do
             name="${asset##*/}"

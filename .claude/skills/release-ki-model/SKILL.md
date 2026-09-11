@@ -53,6 +53,8 @@ SDK 完成条件以目标 tag 声明的来源清单、crate、适用测试和跨
 
 按 PR/run/tag 重新建立状态，核对 repository、head/base、commit、attempt、workflow、版本映射和资产。只对同 commit 的瞬时故障在单独确认后重跑；源码或配置需修改的确定性失败使用修复 PR 和新产品版本，不覆盖已公开 tag、资产或映射。
 
+尚无资产的 Draft 若仅因 Actions 权限或 Release API 调用失败，按维护指南通过普通 workflow 修复 PR 恢复原 tag。核对新 run 的 workflow commit 与原 release commit，保留原 tag、SDK 源码、映射、构建参数和检查要求；不得将此规则用于替换发布内容或覆盖已有资产。
+
 正式发布完成必须核对固定 ki-model-vX.Y.Z、40 位 release commit、上游 tag/peeled commit、workflow 与来源证明，且声明的全部检查/资产满足契约。未验证项逐项写明。证据保留在现有映射、产品 CHANGELOG、关联 PR/run/Release；不另建本地发布日志。
 
 发布完成后向下游提供固定 SDK tag/commit、来源映射和验证结果；下游按实际依赖清单核对全部直接 SDK crate 同源同 revision。Core pin 更新和下游发布由各自维护流程决定。PR 合并/关闭前保留 worktree，清理和分支删除分别确认。
