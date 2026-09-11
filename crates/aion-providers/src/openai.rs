@@ -15,11 +15,29 @@ use crate::transport::{OpenAiTransport, ProviderTransport};
 use crate::{LlmProvider, ProviderError};
 use aion_config::compat::ProviderCompat;
 
+pub use crate::openai_options::{OpenAIAuth, OpenAIConfigError, OpenAIOptions};
+
 pub struct OpenAIProvider {
     inner: ComposedProvider,
 }
 
 impl OpenAIProvider {
+    /// Construct a provider with validated authentication, headers and an optional
+    /// shared client. An empty `compat.transport.api_path` selects a full URL.
+    /// With default options and a valid key, behavior matches `new`.
+    pub fn with_options(
+        api_key: Option<&str>,
+        base_url: &str,
+        compat: ProviderCompat,
+        options: OpenAIOptions,
+    ) -> Result<Self, OpenAIConfigError> {
+        let transport = OpenAiTransport::with_options(api_key, base_url, options)?;
+        Ok(Self {
+            inner: ComposedProvider::new(ProviderTransport::OpenAi(transport), compat),
+        })
+    }
+
+    /// Legacy constructor using Bearer authentication and the default HTTP client.
     pub fn new(api_key: &str, base_url: &str, compat: ProviderCompat) -> Self {
         let transport = ProviderTransport::OpenAi(OpenAiTransport::new(api_key, base_url));
         let inner = ComposedProvider::new(transport, compat.clone());
@@ -126,6 +144,7 @@ pub(crate) fn parse_sse_chunk(data: &str, state: &mut StreamState, auto_tool_id:
         Ok(v) => v,
         Err(_) => {
             state.diagnostics.observe_invalid_json();
+            state.stream_error = Some(ProviderError::Parse("Invalid JSON in OpenAI SSE event".to_string()));
             return events;
         }
     };

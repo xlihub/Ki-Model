@@ -70,6 +70,7 @@ where
 
     let (tx, rx) = mpsc::channel(64);
 
+    let cancel_tx = tx.clone();
     let stream_span = tracing::Span::current();
     let stream_task = async move {
         let mut response = response;
@@ -140,7 +141,18 @@ where
             }
         }
     };
-    tokio::spawn(stream_task.instrument(stream_span));
+    tokio::spawn(
+        async move {
+            tokio::select! {
+                biased;
+                _ = cancel_tx.closed() => {
+                    tracing::debug!(target: "aion_providers", "provider stream cancelled by consumer");
+                }
+                _ = stream_task => {}
+            }
+        }
+        .instrument(stream_span),
+    );
 
     Ok(rx)
 }

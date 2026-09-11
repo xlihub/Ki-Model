@@ -1,3 +1,5 @@
+use std::{mem, str};
+
 use base64::Engine as _;
 use serde_json::Value;
 
@@ -28,31 +30,34 @@ pub(crate) struct Utf8StreamDecoder {
 }
 
 impl Utf8StreamDecoder {
-    /// Append `chunk` to the pending bytes and return the longest valid UTF-8
-    /// prefix as an owned `String`, retaining any incomplete trailing sequence
-    /// for the next call. The returned string may be empty.
+    /// Decode all available bytes, replacing invalid sequences and retaining
+    /// only an incomplete trailing sequence for the next call. The returned
+    /// string may be empty.
     pub(crate) fn push(&mut self, chunk: &[u8]) -> String {
         self.pending.extend_from_slice(chunk);
 
-        let valid_up_to = match std::str::from_utf8(&self.pending) {
-            Ok(_) => self.pending.len(),
-            Err(error) => error.valid_up_to(),
-        };
-
-        // A truly invalid leading byte (valid_up_to == 0) would stick forever.
-        // The retained tail of an incomplete sequence is at most 3 bytes, so
-        // once pending grows past that, drop one leading byte lossily to make
-        // progress instead of buffering unboundedly.
-        if valid_up_to == 0 {
-            if self.pending.len() > 3 {
-                let dropped = self.pending.remove(0);
-                return String::from_utf8_lossy(&[dropped]).into_owned();
+        let mut decoded = String::new();
+        let mut consumed = 0;
+        while consumed < self.pending.len() {
+            match str::from_utf8(&self.pending[consumed..]) {
+                Ok(text) => {
+                    decoded.push_str(text);
+                    consumed = self.pending.len();
+                }
+                Err(error) => {
+                    let valid_end = consumed + error.valid_up_to();
+                    decoded.push_str(&String::from_utf8_lossy(&self.pending[consumed..valid_end]));
+                    consumed = valid_end;
+                    let Some(invalid_len) = error.error_len() else {
+                        // Only an incomplete trailing sequence waits for another chunk.
+                        break;
+                    };
+                    decoded.push('\u{fffd}');
+                    consumed += invalid_len;
+                }
             }
-            return String::new();
         }
-
-        let decoded = String::from_utf8_lossy(&self.pending[..valid_up_to]).into_owned();
-        self.pending.drain(..valid_up_to);
+        self.pending.drain(..consumed);
         decoded
     }
 
@@ -69,15 +74,76 @@ impl Utf8StreamDecoder {
     }
 }
 
+/// Shared SSE field/event state. A blank line dispatches one event; network
+/// chunks and individual data lines are not event boundaries.
 #[derive(Default)]
-pub(crate) struct SseLineFramer {
-    buffer: String,
+struct SseFramer {
+    line: String,
+    data: String,
+    event: Option<String>,
+    after_cr: bool,
+    started: bool,
 }
 
 #[derive(Default)]
-pub(crate) struct SseBlockFramer {
-    buffer: String,
-    current_event_type: Option<String>,
+pub(crate) struct SseEventFramer(SseFramer);
+
+#[derive(Default)]
+pub(crate) struct SseBlockFramer(SseFramer);
+
+impl SseFramer {
+    fn push_text(&mut self, text: &str, done_sentinel: Option<&str>) -> Vec<Frame> {
+        let mut frames = Vec::new();
+        for ch in text.chars() {
+            if !self.started {
+                self.started = true;
+                if ch == '\u{feff}' {
+                    continue;
+                }
+            }
+            let after_cr = mem::replace(&mut self.after_cr, ch == '\r');
+            if ch == '\n' && after_cr {
+                continue;
+            }
+            if ch == '\r' || ch == '\n' {
+                self.finish_line(done_sentinel, &mut frames);
+            } else {
+                self.line.push(ch);
+            }
+        }
+        frames
+    }
+
+    fn finish_line(&mut self, done_sentinel: Option<&str>, frames: &mut Vec<Frame>) {
+        let line = mem::take(&mut self.line);
+        if line.is_empty() {
+            let event = self.event.take();
+            if !self.data.is_empty() {
+                self.data.pop(); // Each data field appends exactly one LF.
+                let data = mem::take(&mut self.data);
+                let kind = if done_sentinel == Some(data.as_str()) {
+                    FrameKind::Done
+                } else {
+                    FrameKind::Data
+                };
+                frames.push(Frame { event, data, kind });
+            }
+            return;
+        }
+        if line.starts_with(':') {
+            return;
+        }
+        let (field, value) = line.split_once(':').unwrap_or((&line, ""));
+        let value = value.strip_prefix(' ').unwrap_or(value);
+        match field {
+            "data" => {
+                self.data.push_str(value);
+                self.data.push('\n');
+            }
+            "event" => self.event = Some(value.to_string()),
+            _ => {}
+        }
+    }
 }
 
 pub(crate) fn bedrock_payload_to_frame(payload: &[u8]) -> Option<Frame> {
@@ -95,60 +161,19 @@ pub(crate) fn bedrock_payload_to_frame(payload: &[u8]) -> Option<Frame> {
     })
 }
 
-impl SseLineFramer {
+impl SseEventFramer {
+    pub(crate) fn has_pending_event(&self) -> bool {
+        !self.0.data.is_empty() || (!self.0.line.is_empty() && !self.0.line.starts_with(':'))
+    }
+
     pub(crate) fn push_text(&mut self, text: &str, done_sentinel: &str) -> Vec<Frame> {
-        self.buffer.push_str(text);
-
-        let mut frames = Vec::new();
-        while let Some(line_end) = self.buffer.find('\n') {
-            let line = self.buffer.drain(..=line_end).collect::<String>();
-            let line = line.trim();
-
-            if line.is_empty() || line.starts_with(':') {
-                continue;
-            }
-
-            if let Some(data) = line.strip_prefix("data: ") {
-                frames.push(Frame {
-                    event: None,
-                    data: data.to_string(),
-                    kind: if data == done_sentinel {
-                        FrameKind::Done
-                    } else {
-                        FrameKind::Data
-                    },
-                });
-            }
-        }
-
-        frames
+        self.0.push_text(text, Some(done_sentinel))
     }
 }
 
 impl SseBlockFramer {
     pub(crate) fn push_text(&mut self, text: &str) -> Vec<Frame> {
-        self.buffer.push_str(text);
-
-        let mut frames = Vec::new();
-        while let Some(block_end) = self.buffer.find("\n\n") {
-            let block = self.buffer.drain(..block_end + 2).collect::<String>();
-            let block = &block[..block_end];
-
-            for line in block.lines() {
-                let line = line.strip_suffix('\r').unwrap_or(line);
-                if let Some(event_type) = line.strip_prefix("event: ") {
-                    self.current_event_type = Some(event_type.to_string());
-                } else if let Some(data) = line.strip_prefix("data: ") {
-                    frames.push(Frame {
-                        event: self.current_event_type.clone(),
-                        data: data.to_string(),
-                        kind: FrameKind::Data,
-                    });
-                }
-            }
-        }
-
-        frames
+        self.0.push_text(text, None)
     }
 }
 

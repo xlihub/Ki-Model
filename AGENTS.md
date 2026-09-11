@@ -226,6 +226,10 @@ error conditions, or non-obvious logic.
 
 ## Documentation
 
+仓库文档只描述长期有效的规范、架构、接口契约和使用方式。具体某次修改的需求背景、实现过程、提交 SHA、测试结果、失败恢复、审查结论及交付状态，记录在关联 Issue 和 PR 中，不写入长期文档。
+
+更新文档时直接描述最终约定与行为；检查内容是否脱离本次任务仍然成立。可链接 Issue/PR 说明决策来源，但不复制执行记录。
+
 Key references in `docs/` (don't duplicate their content here):
 
 | Document | Covers |

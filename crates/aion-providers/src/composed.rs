@@ -53,13 +53,23 @@ impl LlmProvider for ComposedProvider {
             let body = body.clone();
             let model = model.clone();
             async move {
-                let projected_request = transport.build_projected_request(&model, body, &compat, tool_wire_shape)?;
-                transport.send(projected_request).await
+                let redactor = transport.error_redactor();
+                let projected_request = transport
+                    .build_projected_request(&model, body, &compat, tool_wire_shape)
+                    .map_err(|error| redactor.error(error))?;
+                transport
+                    .send(projected_request)
+                    .await
+                    .map_err(|error| redactor.error(error))
             }
         };
 
         let decoder = self.transport.decoder(&self.compat);
-        let process = move |response, tx| async move { decoder.process(response, &tx).await };
+        let redactor = self.transport.error_redactor();
+        let process = move |response, tx| {
+            let redactor = redactor.clone();
+            async move { decoder.process(response, &tx, &redactor).await }
+        };
         let retry_policy = self.transport.retry_policy();
 
         run_stream(send, process, retry_policy).await

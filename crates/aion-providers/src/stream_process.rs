@@ -6,40 +6,85 @@ use aion_types::llm::LlmEvent;
 use aion_types::message::{StopReason, TokenUsage};
 
 use crate::error::ProviderError;
-use crate::framing::{FrameKind, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
+use crate::error_redaction::ErrorRedactor;
+use crate::framing::{Frame, FrameKind, SseBlockFramer, SseEventFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
 use crate::openai::StreamState as OpenAiStreamState;
+use crate::openai_responses::StreamState as OpenAiResponsesStreamState;
 use crate::parser::{AnthropicParser, OpenAiParser, OpenAiResponsesParser, ResponseParser};
 use crate::stream_diagnostics::StreamTermination;
 use crate::stream_runner::StreamOutcome;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum StreamDecoder {
-    OpenAiSseLine { auto_tool_id: bool },
+    OpenAiChatCompletionsSse { auto_tool_id: bool },
     OpenAiResponsesSse,
     AnthropicSseBlock,
     BedrockAwsEventStream,
 }
 
 impl StreamDecoder {
-    pub(crate) async fn process(self, response: reqwest::Response, tx: &mpsc::Sender<LlmEvent>) -> StreamOutcome {
+    pub(crate) async fn process(
+        self,
+        response: reqwest::Response,
+        tx: &mpsc::Sender<LlmEvent>,
+        redactor: &ErrorRedactor,
+    ) -> StreamOutcome {
         match self {
-            Self::OpenAiSseLine { auto_tool_id } => process_openai_sse_stream(response, tx, auto_tool_id).await,
-            Self::OpenAiResponsesSse => process_openai_responses_sse_stream(response, tx).await,
+            Self::OpenAiChatCompletionsSse { auto_tool_id } => {
+                process_openai_sse_stream(response, tx, auto_tool_id, redactor).await
+            }
+            Self::OpenAiResponsesSse => process_openai_responses_sse_stream(response, tx, redactor).await,
             Self::AnthropicSseBlock => process_anthropic_sse_stream(response, tx).await,
             Self::BedrockAwsEventStream => process_bedrock_aws_event_stream(response, tx).await,
         }
     }
 }
 
-pub(crate) async fn process_openai_responses_sse_stream(
+/// Process one Responses frame and stop on terminal events or consumer closure.
+async fn process_openai_responses_sse_frame(
+    frame: &Frame,
+    parser: &OpenAiResponsesParser,
+    state: &mut OpenAiResponsesStreamState,
+    tx: &mpsc::Sender<LlmEvent>,
+    emitted_content: &mut bool,
+    redactor: &ErrorRedactor,
+) -> Option<StreamOutcome> {
+    tracing::debug!(target: "aion_providers", event_type = ?frame.event, "OpenAI Responses SSE event received");
+    let events = parser.parse_frame(frame, state);
+    for event in events {
+        let event = match event {
+            LlmEvent::Error(message) => LlmEvent::Error(redactor.text(message)),
+            other => other,
+        };
+        if matches!(
+            event,
+            LlmEvent::TextDelta(_)
+                | LlmEvent::ThinkingDelta(_)
+                | LlmEvent::ProviderItem { .. }
+                | LlmEvent::ToolUse { .. }
+        ) {
+            *emitted_content = true;
+        }
+        if tx.send(event).await.is_err() {
+            return Some(StreamOutcome::Ok);
+        }
+    }
+    if state.is_terminal() {
+        return Some(StreamOutcome::Ok);
+    }
+    None
+}
+
+async fn process_openai_responses_sse_stream(
     response: reqwest::Response,
     tx: &mpsc::Sender<LlmEvent>,
+    redactor: &ErrorRedactor,
 ) -> StreamOutcome {
     use futures::StreamExt;
 
     let parser = OpenAiResponsesParser;
     let mut state = parser.new_state();
-    let mut framer = SseLineFramer::default();
+    let mut framer = SseEventFramer::default();
     let mut decoder = Utf8StreamDecoder::default();
     let mut stream = response.bytes_stream();
     let mut emitted_content = false;
@@ -48,7 +93,7 @@ pub(crate) async fn process_openai_responses_sse_stream(
         let chunk = match chunk {
             Ok(chunk) => chunk,
             Err(error) => {
-                let error = ProviderError::Connection(error.to_string());
+                let error = ProviderError::Connection(error.without_url().to_string());
                 return if emitted_content {
                     StreamOutcome::FailedPartial(error)
                 } else {
@@ -58,24 +103,11 @@ pub(crate) async fn process_openai_responses_sse_stream(
         };
         let text = decoder.push(&chunk);
         for frame in framer.push_text(&text, "[DONE]") {
-            tracing::debug!(target: "aion_providers", event_type = ?frame.event, "OpenAI Responses SSE event received");
-            let events = parser.parse_frame(&frame, &mut state);
-            for event in events {
-                if matches!(
-                    event,
-                    LlmEvent::TextDelta(_)
-                        | LlmEvent::ThinkingDelta(_)
-                        | LlmEvent::ProviderItem { .. }
-                        | LlmEvent::ToolUse { .. }
-                ) {
-                    emitted_content = true;
-                }
-                if tx.send(event).await.is_err() {
-                    return StreamOutcome::Ok;
-                }
-            }
-            if state.is_terminal() {
-                return StreamOutcome::Ok;
+            if let Some(outcome) =
+                process_openai_responses_sse_frame(&frame, &parser, &mut state, tx, &mut emitted_content, redactor)
+                    .await
+            {
+                return outcome;
             }
         }
     }
@@ -83,24 +115,10 @@ pub(crate) async fn process_openai_responses_sse_stream(
     // Flush any bytes left over at the true end of the stream.
     let text = decoder.flush();
     for frame in framer.push_text(&text, "[DONE]") {
-        tracing::debug!(target: "aion_providers", event_type = ?frame.event, "OpenAI Responses SSE event received");
-        let events = parser.parse_frame(&frame, &mut state);
-        for event in events {
-            if matches!(
-                event,
-                LlmEvent::TextDelta(_)
-                    | LlmEvent::ThinkingDelta(_)
-                    | LlmEvent::ProviderItem { .. }
-                    | LlmEvent::ToolUse { .. }
-            ) {
-                emitted_content = true;
-            }
-            if tx.send(event).await.is_err() {
-                return StreamOutcome::Ok;
-            }
-        }
-        if state.is_terminal() {
-            return StreamOutcome::Ok;
+        if let Some(outcome) =
+            process_openai_responses_sse_frame(&frame, &parser, &mut state, tx, &mut emitted_content, redactor).await
+        {
+            return outcome;
         }
     }
 
@@ -127,16 +145,71 @@ fn take_openai_stream_failure(
     state: &mut OpenAiStreamState,
     emitted_answer: bool,
     started_at: Instant,
+    redactor: &ErrorRedactor,
 ) -> Option<StreamOutcome> {
     let error = state.take_stream_error()?;
     state.emit_diagnostics(StreamTermination::ProviderError, started_at.elapsed());
-    Some(failed_stream_outcome(emitted_answer, error))
+    Some(failed_stream_outcome(emitted_answer, redactor.error(error)))
 }
 
-pub(crate) async fn process_openai_sse_stream(
+#[derive(Default)]
+struct OpenAiStreamProgress {
+    // Any delivered content blocks replay, including visible reasoning.
+    emitted_answer: bool,
+    emitted_done: bool,
+}
+
+/// Process one frame and return an outcome only when the stream should stop.
+async fn process_openai_sse_frame(
+    frame: &Frame,
+    parser: &OpenAiParser,
+    state: &mut OpenAiStreamState,
+    tx: &mpsc::Sender<LlmEvent>,
+    progress: &mut OpenAiStreamProgress,
+    started_at: Instant,
+    redactor: &ErrorRedactor,
+) -> Option<StreamOutcome> {
+    state.diagnostics_mut().observe_frame(frame);
+    let is_done = frame.kind == FrameKind::Done;
+    let events = parser.parse_frame(frame, state);
+    for event in events {
+        state.diagnostics_mut().observe_event(&event);
+        if matches!(event, LlmEvent::Done { .. }) {
+            progress.emitted_done = true;
+        }
+        if matches!(
+            event,
+            LlmEvent::TextDelta(_) | LlmEvent::ThinkingDelta(_) | LlmEvent::ToolUse { .. }
+        ) {
+            progress.emitted_answer = true;
+        }
+        if tx.send(event).await.is_err() {
+            state.emit_diagnostics(StreamTermination::ConsumerDropped, started_at.elapsed());
+            return Some(StreamOutcome::Ok);
+        }
+    }
+    if let Some(outcome) = take_openai_stream_failure(state, progress.emitted_answer, started_at, redactor) {
+        return Some(outcome);
+    }
+    if is_done {
+        if !progress.emitted_done {
+            state.emit_diagnostics(StreamTermination::EofWithoutTerminal, started_at.elapsed());
+            return Some(failed_stream_outcome(
+                progress.emitted_answer,
+                ProviderError::Connection("OpenAI DONE arrived without a finish reason".to_string()),
+            ));
+        }
+        state.emit_diagnostics(StreamTermination::Done, started_at.elapsed());
+        return Some(StreamOutcome::Ok);
+    }
+    None
+}
+
+async fn process_openai_sse_stream(
     response: reqwest::Response,
     tx: &mpsc::Sender<LlmEvent>,
     auto_tool_id: bool,
+    redactor: &ErrorRedactor,
 ) -> StreamOutcome {
     use futures::StreamExt;
 
@@ -146,45 +219,27 @@ pub(crate) async fn process_openai_sse_stream(
         .diagnostics_mut()
         .observe_response(response.status().as_u16(), response.headers());
     let started_at = Instant::now();
-    let mut framer = SseLineFramer::default();
+    let mut framer = SseEventFramer::default();
     let mut decoder = Utf8StreamDecoder::default();
     let mut stream = response.bytes_stream();
-    // Only visible answer content (text/tool calls) blocks a stream retry;
-    // a turn that produced nothing but reasoning deltas is safe to re-run.
-    let mut emitted_answer = false;
-    let mut emitted_done = false;
+    let mut progress = OpenAiStreamProgress::default();
 
     while let Some(chunk) = stream.next().await {
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                let err = ProviderError::Connection(e.to_string());
+                let err = ProviderError::Connection(e.without_url().to_string());
                 state.emit_diagnostics(StreamTermination::ConnectionError, started_at.elapsed());
-                return failed_stream_outcome(emitted_answer, err);
+                return failed_stream_outcome(progress.emitted_answer, err);
             }
         };
         state.diagnostics_mut().observe_network_chunk(chunk.len());
         let text = decoder.push(&chunk);
         for frame in framer.push_text(&text, "[DONE]") {
-            state.diagnostics_mut().observe_frame(&frame);
-            let is_done = frame.kind == FrameKind::Done;
-            let events = parser.parse_frame(&frame, &mut state);
-            for event in events {
-                state.diagnostics_mut().observe_event(&event);
-                if matches!(event, LlmEvent::TextDelta(_) | LlmEvent::ToolUse { .. }) {
-                    emitted_answer = true;
-                }
-                if tx.send(event).await.is_err() {
-                    state.emit_diagnostics(StreamTermination::ConsumerDropped, started_at.elapsed());
-                    return StreamOutcome::Ok;
-                }
-            }
-            if let Some(outcome) = take_openai_stream_failure(&mut state, emitted_answer, started_at) {
+            if let Some(outcome) =
+                process_openai_sse_frame(&frame, &parser, &mut state, tx, &mut progress, started_at, redactor).await
+            {
                 return outcome;
-            }
-            if is_done {
-                state.emit_diagnostics(StreamTermination::Done, started_at.elapsed());
-                return StreamOutcome::Ok;
             }
         }
     }
@@ -192,26 +247,19 @@ pub(crate) async fn process_openai_sse_stream(
     // Flush any bytes left over at the true end of the stream.
     let text = decoder.flush();
     for frame in framer.push_text(&text, "[DONE]") {
-        state.diagnostics_mut().observe_frame(&frame);
-        let is_done = frame.kind == FrameKind::Done;
-        let events = parser.parse_frame(&frame, &mut state);
-        for event in events {
-            state.diagnostics_mut().observe_event(&event);
-            if matches!(event, LlmEvent::TextDelta(_) | LlmEvent::ToolUse { .. }) {
-                emitted_answer = true;
-            }
-            if tx.send(event).await.is_err() {
-                state.emit_diagnostics(StreamTermination::ConsumerDropped, started_at.elapsed());
-                return StreamOutcome::Ok;
-            }
-        }
-        if let Some(outcome) = take_openai_stream_failure(&mut state, emitted_answer, started_at) {
+        if let Some(outcome) =
+            process_openai_sse_frame(&frame, &parser, &mut state, tx, &mut progress, started_at, redactor).await
+        {
             return outcome;
         }
-        if is_done {
-            state.emit_diagnostics(StreamTermination::Done, started_at.elapsed());
-            return StreamOutcome::Ok;
-        }
+    }
+
+    if framer.has_pending_event() {
+        state.emit_diagnostics(StreamTermination::EofWithoutTerminal, started_at.elapsed());
+        return failed_stream_outcome(
+            progress.emitted_answer,
+            ProviderError::Connection("OpenAI stream ended inside an SSE event".to_string()),
+        );
     }
 
     // `finish` flushes the deferred Done for gateways that send a
@@ -219,7 +267,7 @@ pub(crate) async fn process_openai_sse_stream(
     for event in parser.finish(&mut state) {
         state.diagnostics_mut().observe_event(&event);
         if matches!(event, LlmEvent::Done { .. }) {
-            emitted_done = true;
+            progress.emitted_done = true;
         }
         if tx.send(event).await.is_err() {
             state.emit_diagnostics(StreamTermination::ConsumerDropped, started_at.elapsed());
@@ -227,7 +275,7 @@ pub(crate) async fn process_openai_sse_stream(
         }
     }
 
-    if emitted_done {
+    if progress.emitted_done {
         state.emit_diagnostics(StreamTermination::Eof, started_at.elapsed());
         return StreamOutcome::Ok;
     }
@@ -237,13 +285,10 @@ pub(crate) async fn process_openai_sse_stream(
     // answer) instead of reporting an empty successful turn.
     let error = ProviderError::Connection("OpenAI stream ended without a terminal event".to_string());
     state.emit_diagnostics(StreamTermination::EofWithoutTerminal, started_at.elapsed());
-    failed_stream_outcome(emitted_answer, error)
+    failed_stream_outcome(progress.emitted_answer, error)
 }
 
-pub(crate) async fn process_anthropic_sse_stream(
-    response: reqwest::Response,
-    tx: &mpsc::Sender<LlmEvent>,
-) -> StreamOutcome {
+async fn process_anthropic_sse_stream(response: reqwest::Response, tx: &mpsc::Sender<LlmEvent>) -> StreamOutcome {
     use futures::StreamExt;
 
     let parser = AnthropicParser;
@@ -257,7 +302,7 @@ pub(crate) async fn process_anthropic_sse_stream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                let err = ProviderError::Connection(e.to_string());
+                let err = ProviderError::Connection(e.without_url().to_string());
                 return if emitted_content {
                     StreamOutcome::FailedPartial(err)
                 } else {
@@ -305,10 +350,7 @@ pub(crate) async fn process_anthropic_sse_stream(
     StreamOutcome::Ok
 }
 
-pub(crate) async fn process_bedrock_aws_event_stream(
-    response: reqwest::Response,
-    tx: &mpsc::Sender<LlmEvent>,
-) -> StreamOutcome {
+async fn process_bedrock_aws_event_stream(response: reqwest::Response, tx: &mpsc::Sender<LlmEvent>) -> StreamOutcome {
     use futures::StreamExt;
 
     let parser = AnthropicParser;
@@ -322,7 +364,7 @@ pub(crate) async fn process_bedrock_aws_event_stream(
         let chunk = match chunk {
             Ok(c) => c,
             Err(e) => {
-                let err = ProviderError::Connection(e.to_string());
+                let err = ProviderError::Connection(e.without_url().to_string());
                 return if emitted_content {
                     StreamOutcome::FailedPartial(err)
                 } else {
