@@ -61,9 +61,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          args=()
-          if [[ -n "$BASE_SHA" ]]; then args+=(--base-sha "$BASE_SHA"); fi
-          python .github/ki-model-metadata.py validate "${args[@]}"
+          if [[ -z "$BASE_SHA" ]]; then BASE_SHA="$(git rev-parse origin/product/main)"; fi
+          python .github/ki-model-metadata.py validate --base-sha "$BASE_SHA"
 
       - name: SDK workspace metadata
         run: vx cargo metadata --locked --format-version 1 --no-deps

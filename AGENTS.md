@@ -51,9 +51,11 @@ cargo clippy           # Lint
 cargo fmt --all        # Format (CI enforces this)
 ```
 
-**Pushing code: always use `just push` instead of `git push`.**
+**Local pushes: always use `just push` instead of `git push`.**
 It runs fmt → clippy → test before pushing, preventing CI failures.
 Supports the same arguments as `git push` (e.g. `just push -u origin branch`).
+
+Ki-Model 的 Release Please workflow 生成版本映射时，先运行发布元数据验证，再提交和推送机器人分支，并显式触发最终 PR head 的完整产品 CI；版本 PR 必须通过同样的 required checks 才能合并。
 
 ## Code Standards
 

@@ -107,7 +107,7 @@ gh workflow run ki-model-release-please.yml --repo xlihub/Ki-Model --ref product
 
 全部九个文件上传至 Draft Release 后，workflow 下载并核对文件集合与 checksums，再公开 Release。产品版本与 Cargo crate 版本分别表达产品发行和上游代码版本，二者无需相等。SDK 消费可使用固定产品 tag 或 commit；CLI 压缩包是可选分发形式。
 
-已合并版本 PR 的 tag 创建任务中断时，可在核对实际状态后使用 `release-current` 恢复，仍需 Environment 审批。已创建 tag 的构建发生瞬时失败时，对同一 tag 恢复稳定版 workflow：
+已合并版本 PR 的 tag 创建任务中断时，可在核对实际状态后使用 `release-current` 恢复，仍需 Environment 审批。已创建 tag 的任务发生瞬时失败时，优先对原 run 使用 `gh run rerun RUN_ID --repo xlihub/Ki-Model --failed`，上传任务可复用同一次运行的构建产物。只有原产物不可用且 Draft 中没有部分资产时，才重新 dispatch 同一 tag 的完整构建：
 
 ```bash
 gh workflow run ki-model-release-please.yml --repo xlihub/Ki-Model --ref product/main --field operation=release-current
