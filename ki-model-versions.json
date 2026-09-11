@@ -1,4 +1,14 @@
 {
   "schemaVersion": 1,
-  "versions": []
+  "versions": [
+    {
+      "version": "0.1.0",
+      "tag": "ki-model-v0.1.0",
+      "upstream": {
+        "repository": "iOfficeAI/aionrs",
+        "tag": "v0.2.11",
+        "peeledCommit": "8e61a90329fa9f67c4fdf7e97fe02c24dba33f75"
+      }
+    }
+  ]
 }
