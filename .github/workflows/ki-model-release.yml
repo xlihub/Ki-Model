@@ -1,0 +1,242 @@
+# Derived from aionrs release.yml; product version and publication policy are Ki-specific.
+name: Ki-Model Stable Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: Approved Ki-Model tag, for example ki-model-v0.1.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ki-model-stable-${{ inputs.tag_name }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_HTTP_TIMEOUT: "600"
+  CARGO_NET_RETRY: "10"
+  RELEASE_TAG: ${{ inputs.tag_name }}
+
+jobs:
+  prepare-release:
+    name: Verify fixed SDK source
+    if: github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+      commit: ${{ steps.metadata.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: refs/tags/${{ inputs.tag_name }}
+      - name: Validate tag, approved baseline and draft Release
+        id: metadata
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^ki-model-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          version="${RELEASE_TAG#ki-model-v}"
+          test "$(cat ki-model-version.txt)" = "$version"
+          python .github/ki-model-metadata.py validate --release
+          commit="$(git rev-parse HEAD)"
+          git merge-base --is-ancestor "$commit" origin/product/main
+          upstream_tag="$(jq -er '.tag' ki-model-upstream.json)"
+          expected="$(jq -er '.peeledCommit' ki-model-upstream.json)"
+          git fetch --no-tags https://github.com/iOfficeAI/aionrs.git "refs/tags/$upstream_tag"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$expected"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
+          jq -e --arg tag "$RELEASE_TAG" '.draft == true and .prerelease == false and .tag_name == $tag' /tmp/release.json
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+      - name: Setup vx
+        uses: loonghao/vx@v0.9.26
+        with:
+          setup: 'true'
+          cache: 'true'
+      - name: Install nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: nextest
+      - name: Test and describe the tagged SDK workspace
+        run: |
+          vx just test-ci
+          vx cargo metadata --locked --format-version 1 --no-deps > /tmp/sdk-metadata.json
+      - name: Package SDK source and provenance
+        run: |
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="$RELEASE_TAG/" HEAD > "dist/$RELEASE_TAG-sdk.tar.gz"
+          python .github/ki-model-metadata.py provenance /tmp/sdk-metadata.json "dist/$RELEASE_TAG-source.json"
+          mkdir /tmp/ki-model-sdk
+          tar -xzf "dist/$RELEASE_TAG-sdk.tar.gz" -C /tmp/ki-model-sdk
+          CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" vx cargo check --locked --workspace --all-targets --manifest-path "/tmp/ki-model-sdk/$RELEASE_TAG/Cargo.toml"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: sdk-source
+          path: dist/*
+          if-no-files-found: error
+
+  build:
+    if: github.repository == 'xlihub/Ki-Model'
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    needs: prepare-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary_name: aionrs
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary_name: aionrs
+            use_cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            binary_name: aionrs
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary_name: aionrs
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            binary_name: aionrs.exe
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+            binary_name: aionrs.exe
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare-release.outputs.commit }}
+
+      - name: Setup vx (installs Rust from vx.toml)
+        uses: loonghao/vx@v0.9.26
+        with:
+          setup: 'true'
+          cache: 'true'
+
+      - name: Add cross-compile target
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Fix MSVC linker (remove Git's link.exe)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Remove-Item 'C:\Program Files\Git\usr\bin\link.exe' -Force -ErrorAction SilentlyContinue
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ki-model-release-${{ matrix.target }}
+
+      - name: Install cross (Linux aarch64)
+        if: matrix.use_cross == true
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          if [[ "${{ matrix.use_cross }}" == "true" ]]; then
+            cross build --locked --release --target ${{ matrix.target }} -p aion-cli
+          else
+            vx cargo build --locked --release --target ${{ matrix.target }} -p aion-cli
+          fi
+
+      - name: Package binary (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          mkdir -p dist
+          ARCHIVE="ki-model-v${VERSION}-${{ matrix.target }}.tar.gz"
+          tar -C target/${{ matrix.target }}/release -czf "dist/${ARCHIVE}" ${{ matrix.binary_name }}
+          echo "ARCHIVE=${ARCHIVE}" >> "$GITHUB_ENV"
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VERSION: ${{ needs.prepare-release.outputs.version }}
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          $archive = "ki-model-v${env:VERSION}-${{ matrix.target }}.zip"
+          Compress-Archive -Path "target/${{ matrix.target }}/release/${{ matrix.binary_name }}" -DestinationPath "dist/${archive}" -Force
+          "ARCHIVE=${archive}" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target }}
+          path: dist/${{ env.ARCHIVE }}
+          if-no-files-found: error
+
+  github-release:
+    name: Publish complete Ki-Model Release
+    needs: [prepare-release, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Check declared assets and generate checksums
+        env:
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        run: |
+          python - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          root = Path('artifacts')
+          tag = os.environ['RELEASE_TAG']
+          targets = ['x86_64-unknown-linux-gnu', 'aarch64-unknown-linux-gnu',
+                     'x86_64-apple-darwin', 'aarch64-apple-darwin',
+                     'x86_64-pc-windows-msvc', 'aarch64-pc-windows-msvc']
+          expected = {tag + '-' + target + ('.zip' if 'windows' in target else '.tar.gz') for target in targets}
+          expected.update({tag + '-sdk.tar.gz', tag + '-source.json'})
+          if {p.name for p in root.iterdir()} != expected:
+              raise SystemExit('Release artifacts do not match the declared SDK and six-platform contract')
+          source = json.loads((root / (tag + '-source.json')).read_text())
+          if source['tag'] != tag or source['commit'] != os.environ['RELEASE_COMMIT'] or not source['sdkCrates']:
+              raise SystemExit('SDK source provenance does not match this release')
+          PYCODE
+          cd artifacts
+          sha256sum ki-model-* > ki-model-checksums.txt
+          sha256sum --check ki-model-checksums.txt
+      - name: Upload without replacing assets and publish the complete draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_COMMIT: ${{ needs.prepare-release.outputs.commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" > /tmp/release.json
+          jq -e '.draft == true' /tmp/release.json
+          mkdir existing
+          for asset in artifacts/*; do
+            name="${asset##*/}"
+            if jq -e --arg name "$name" '.assets | any(.name == $name)' /tmp/release.json >/dev/null; then
+              gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$name" --dir existing
+              cmp "$asset" "existing/$name"
+            else
+              gh release upload "$RELEASE_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+            fi
+          done
+          mkdir verified
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir verified
+          test "$(find verified -maxdepth 1 -type f | wc -l)" -eq 9
+          diff -qr artifacts verified
+          (cd verified && sha256sum --check ki-model-checksums.txt)
+          actual="$(git ls-remote https://github.com/$GITHUB_REPOSITORY.git "refs/tags/$RELEASE_TAG" "refs/tags/$RELEASE_TAG^{}" | awk 'END {print $1}')"
+          test "$actual" = "$RELEASE_COMMIT"
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest

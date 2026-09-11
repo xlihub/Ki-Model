@@ -1,0 +1,134 @@
+# Reuse aionrs Release Please; keep Ki version selection and tag approval separate.
+name: Ki-Model Release Please
+
+on:
+  push:
+    branches: [product/main]
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Prepare the selected version PR or resume the merged release
+        required: true
+        type: choice
+        options: [update-pr, release-current]
+        default: update-pr
+
+permissions: read-all
+
+concurrency:
+  group: ki-model-release-please
+  cancel-in-progress: false
+
+jobs:
+  update-pr:
+    name: Prepare Ki-Model version PR
+    if: github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'update-pr'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate maintainer-selected version
+        id: selected
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(jq -er '.packages["."]["release-as"]' release-please-config.ki-model.json)"
+          python - "$version" <<'PY'
+          import re, sys
+          from pathlib import Path
+          version = sys.argv[1]
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', version):
+              raise SystemExit('Select a stable X.Y.Z product version')
+          current = Path('ki-model-version.txt').read_text().strip()
+          if tuple(map(int, version.split('.'))) <= tuple(map(int, current.split('.'))):
+              raise SystemExit('Selected version must be higher than the current product version')
+          PY
+          existing="$(git ls-remote --tags origin "refs/tags/ki-model-v${version}")"
+          test -z "$existing"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: googleapis/release-please-action@v5
+        id: release-please
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: product/main
+          config-file: release-please-config.ki-model.json
+          manifest-file: .release-please-manifest.ki-model.json
+          skip-github-release: true
+      - name: Checkout version PR
+        if: steps.release-please.outputs.pr
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ fromJSON(steps.release-please.outputs.pr).headBranchName }}
+      - name: Promote pending baseline and append version mapping
+        if: steps.release-please.outputs.pr
+        env:
+          VERSION: ${{ steps.selected.outputs.version }}
+        run: |
+          python .github/ki-model-metadata.py prepare "$VERSION"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add ki-model-upstream.json ki-model-versions.json
+          if git ls-files --error-unmatch ki-model-upstream-pending.json >/dev/null 2>&1; then
+            git add -u -- ki-model-upstream-pending.json
+          fi
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore(release): record Ki-Model upstream mapping'
+            git push
+          fi
+      - name: Run CI on the final version PR head
+        if: steps.release-please.outputs.pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_BRANCH: ${{ fromJSON(steps.release-please.outputs.pr).headBranchName }}
+        run: gh workflow run ki-model-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_BRANCH"
+      - name: Require a version PR
+        if: '!steps.release-please.outputs.pr'
+        run: |
+          echo 'Release Please did not produce a version PR; inspect its output before continuing.' >&2
+          exit 1
+
+  release:
+    name: Approve Ki-Model tag and draft Release
+    if: >-
+      github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main' &&
+      ((github.event_name == 'push' &&
+        (startsWith(github.event.head_commit.message, 'chore: release') ||
+         startsWith(github.event.head_commit.message, 'chore(product/main): release'))) ||
+       (github.event_name == 'workflow_dispatch' && inputs.operation == 'release-current'))
+    runs-on: ubuntu-latest
+    environment: ki-model-stable
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Validate release metadata
+        run: python .github/ki-model-metadata.py validate --release
+      - uses: googleapis/release-please-action@v5
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          target-branch: product/main
+          config-file: release-please-config.ki-model.json
+          manifest-file: .release-please-manifest.ki-model.json
+          skip-github-pull-request: true
+      - name: Start the approved tag's build
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag_name }}
+        run: gh workflow run ki-model-release.yml --repo "$GITHUB_REPOSITORY" --ref product/main --field "tag_name=$RELEASE_TAG"
+      - name: Explain unchanged release state
+        if: steps.release.outputs.release_created != 'true'
+        run: echo 'No new tag was created. Inspect the existing tag and draft Release before resuming its build.'

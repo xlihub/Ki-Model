@@ -39,13 +39,13 @@ commit、just push、创建 PR、合并 PR、dispatch/retry、删除 worktree/br
 
 ## SDK 版本与发布
 
-读取 `ki-model-version.txt`、`ki-model-upstream-pending.json`、`ki-model-upstream.json`、`ki-model-versions.json`、产品 CHANGELOG、Release Please 和稳定版 workflow，并与实际 tag/Release 核对。首次发布时检查配置是否齐备；后续发布时核对最近成功发布版本及其来源。配置缺失或记录不一致时列出具体缺口，通过普通配置或修复 PR 处理，在解决前停止发版。
+按 `docs/ki-model/maintenance.md` 的“发布入口与产物”执行实际命令，读取 `release-please-config.ki-model.json`、`.release-please-manifest.ki-model.json`、`ki-model-version.txt`、`ki-model-upstream-pending.json`、`ki-model-upstream.json`、`ki-model-versions.json`、产品 CHANGELOG、Release Please 和稳定版 workflow，并与实际 tag/Release 核对。首次发布时检查配置是否齐备；后续发布时核对最近成功发布版本及其来源。配置缺失或记录不一致时列出具体缺口，通过普通配置或修复 PR 处理，在解决前停止发版。
 
 建设或更新发布配置时，优先复用选定 aionrs 的 Release Please 与 release workflow 的构建、打包、checksum 和资产汇总，调整 Ki 产品独立版本、tag、branch、基准映射、审批和不可变资产语义。
 
-维护者选定的产品 SemVer 独立于 Cargo workspace version；后续版本须高于已发布稳定版，不得复用已有 tag 或历史映射。采用新上游的同步 PR 应先合并；版本 PR 按实际 Release Please 协议提升 pending、追加新版本映射，保持已发布历史不变。版本准备文件不代表发布成功，须以实际 Release 及其 commit 的映射判定已发布状态。保留可解析分支、标题、正文区块和 autorelease 标签；确定性状态机缺口由普通修复 PR 处理。
+维护者选定的目标写入产品专用 Release Please 配置的 `release-as`，经普通 PR 合入后显式调用 `update-pr`；不在长期文档中固定目标版本。产品 SemVer 独立于 Cargo workspace version；后续版本须高于已发布稳定版，不得复用已有 tag 或历史映射。采用新上游的同步 PR 应先合并；版本 PR 按实际 Release Please 协议提升 pending、追加新版本映射，保持已发布历史不变。版本准备文件不代表发布成功，须以实际 Release 及其 commit 的映射判定已发布状态。保留可解析分支、标题、正文区块和 autorelease 标签；确定性状态机缺口由普通修复 PR 处理。
 
-版本 PR 检查通过并经确认合并后，核对 release commit。tag/Release 应由实际发布 workflow 在 `ki-model-stable` Environment 获维护者审批后创建，并显式触发后续验证；不手工创建产品 tag，不把 GITHUB_TOKEN 创建 tag 等同于另一个 workflow 已启动。
+版本 PR 检查通过并经确认合并后，核对 release commit。tag 与 Draft Release 由 Release Please 在 `ki-model-stable` Environment 获维护者审批后创建，并显式触发稳定版构建；全部产物上传和下载核验通过后才公开 Release；不手工创建产品 tag，不把 GITHUB_TOKEN 创建 tag 等同于另一个 workflow 已启动。
 
 SDK 完成条件以目标 tag 声明的来源清单、crate、适用测试和跨平台构建为准。若承诺 CLI 资产，再核对完整声明矩阵与 checksums；不强制 SDK 用户安装 CLI。只有 tag/Release 对象不代表完整可消费。
 

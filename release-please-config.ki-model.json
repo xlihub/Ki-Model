@@ -1,0 +1,42 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/v17.6.0/schemas/config.json",
+  "bootstrap-sha": "8e61a90329fa9f67c4fdf7e97fe02c24dba33f75",
+  "packages": {
+    ".": {
+      "package-name": "ki-model",
+      "release-type": "simple",
+      "version-file": "ki-model-version.txt",
+      "changelog-path": "CHANGELOG.ki-model.md",
+      "include-component-in-tag": true,
+      "include-v-in-tag": true,
+      "tag-separator": "-",
+      "initial-version": "0.1.0",
+      "release-as": "0.1.0",
+      "draft": true,
+      "force-tag-creation": true,
+      "bump-minor-pre-major": true
+    }
+  },
+  "changelog-sections": [
+    {
+      "type": "feat",
+      "section": "Features",
+      "hidden": false
+    },
+    {
+      "type": "fix",
+      "section": "Bug Fixes",
+      "hidden": false
+    },
+    {
+      "type": "docs",
+      "section": "Documentation",
+      "hidden": false
+    },
+    {
+      "type": "ci",
+      "section": "Continuous Integration",
+      "hidden": false
+    }
+  ]
+}
