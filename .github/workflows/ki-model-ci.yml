@@ -2,6 +2,7 @@
 name: Ki-Model CI
 
 on:
+  workflow_dispatch:
   pull_request:
     branches: [product/main]
   push:
@@ -17,7 +18,7 @@ concurrency:
 
 jobs:
   ci:
-    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main')
+    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release-please--')))
     name: Ki-Model CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -27,6 +28,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - name: Setup vx (installs Rust + just from vx.toml)
         uses: loonghao/vx@v0.9.26
@@ -53,6 +56,14 @@ jobs:
       - name: Run tests (nextest CI profile)
         run: vx just test-ci
 
+      - name: Validate Ki-Model version mapping
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [[ -z "$BASE_SHA" ]]; then BASE_SHA="$(git rev-parse origin/product/main)"; fi
+          python .github/ki-model-metadata.py validate --base-sha "$BASE_SHA"
+
       - name: SDK workspace metadata
         run: vx cargo metadata --locked --format-version 1 --no-deps
 
@@ -73,7 +84,7 @@ jobs:
   # Mirrors the matrix in release.yml so CI catches compile regressions
   # before they reach the release workflow.
   build:
-    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main')
+    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release-please--')))
     name: Ki-Model Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -125,7 +136,7 @@ jobs:
   # ── Annotate PR / commit with test results ────────────────────────────
   report:
     needs: ci
-    if: always() && (github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main'))
+    if: always() && (github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main' || (github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/heads/release-please--'))))
     runs-on: ubuntu-latest
     permissions:
       checks: write

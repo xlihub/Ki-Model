@@ -86,6 +86,36 @@ vx cargo build --release --target TARGET -p aion-cli
 
 SDK 发布完成条件以目标 tag 声明的来源清单、crate、适用测试和跨平台构建为准；承诺 CLI 资产时核对完整声明矩阵与 checksums。只有 tag/Release 对象不代表完整可消费。公开 tag、资产和来源映射不移动、不覆盖。
 
+## 发布入口与产物
+
+产品专用配置使用 `release-please-config.ki-model.json` 与 `.release-please-manifest.ki-model.json`。维护者选定版本后，通过普通维护 PR 更新配置中 `packages["."].release-as`；该值须高于当前产品版本。`0.0.0` 只表示首次发布前的初始化状态，不是已发布版本。
+
+发布开关为仓库变量 `KI_ENABLE_RELEASE_AUTOMATION=true`，Environment 和 tag 保护配置完成后才启用。版本选择 PR 合入后，调用 `ki-model-release-please.yml` 的 `update-pr` 操作。Release Please 生成独立版本 PR，更新产品版本、manifest 和 CHANGELOG；后续步骤提升 pending 并追加来源映射。普通产品提交不自动选择下一版本；只有明确调用 `update-pr` 才准备版本 PR。
+
+```bash
+gh workflow run ki-model-release-please.yml --repo xlihub/Ki-Model --ref product/main --field operation=update-pr
+```
+
+机器人创建的版本 PR 不依赖默认 token 自动触发 CI；workflow 显式对最终版本分支 dispatch `ki-model-ci.yml`。合并版本 PR 时保留 Release Please 的标题、正文和标签，使用已核验的 head SHA。合并触发的发布 job 在 `ki-model-stable` 等待维护者审批，之后由 Release Please 创建不可变产品 tag 与 Draft Release，并显式启动 `ki-model-release.yml`。
+
+稳定版 workflow 在固定 tag 上验证来源和 SDK 测试，复用上游六平台 CLI 构建与打包，生成以下产物：
+
+- `ki-model-vX.Y.Z-<target>.tar.gz` 或 `.zip`：六个平台的 CLI 压缩包，内部可执行文件沿用 `aionrs` / `aionrs.exe`。
+- `ki-model-vX.Y.Z-sdk.tar.gz`：完整可编译 workspace 源码，包含锁文件、产品 CHANGELOG 与版本映射；解压后的源码也执行 Cargo 检查。
+- `ki-model-vX.Y.Z-source.json`：产品版本、tag、40 位 commit、上游来源和 SDK crate 清单。
+- `ki-model-checksums.txt`：覆盖上述八个文件的 SHA-256。
+
+全部九个文件上传至 Draft Release 后，workflow 下载并核对文件集合与 checksums，再公开 Release。产品版本与 Cargo crate 版本分别表达产品发行和上游代码版本，二者无需相等。SDK 消费可使用固定产品 tag 或 commit；CLI 压缩包是可选分发形式。
+
+已合并版本 PR 的 tag 创建任务中断时，可在核对实际状态后使用 `release-current` 恢复，仍需 Environment 审批。已创建 tag 的任务发生瞬时失败时，优先对原 run 使用 `gh run rerun RUN_ID --repo xlihub/Ki-Model --failed`，上传任务可复用同一次运行的构建产物。只有原产物不可用且 Draft 中没有部分资产时，才重新 dispatch 同一 tag 的完整构建：
+
+```bash
+gh workflow run ki-model-release-please.yml --repo xlihub/Ki-Model --ref product/main --field operation=release-current
+gh workflow run ki-model-release.yml --repo xlihub/Ki-Model --ref product/main --field tag_name=ki-model-vX.Y.Z
+```
+
+上传步骤不覆盖已有资产：Draft 中的同名文件须与新产物逐字节一致，否则停止并核查该 Draft 的已有产物。公开后的 Release 不允许通过此流程重新上传；源码或配置修正按新产品版本发布。`.github/ki-model-metadata.py` 只处理上述发布流程所需的版本映射与来源清单，常规上游同步仍使用维护技能和 Git。
+
 ## 中断恢复与下游交接
 
 按 PR、run 或 tag 恢复时重新读取 repository、base/head SHA、workflow、attempt、checks、版本映射和 Release，不依赖旧会话。存在冲突时保留 merge 状态并交给 resolving-merge-conflicts；确定性失败通过修复 PR 处理，同一 commit 的瞬时失败才考虑经确认重跑。已公开版本需要内容修正时发布新产品版本。
