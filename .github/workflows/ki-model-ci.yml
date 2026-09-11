@@ -1,10 +1,11 @@
-name: CI
+# Derived from iOfficeAI/aionrs v0.2.11 CI; retain upstream build and test steps.
+name: Ki-Model CI
 
 on:
   pull_request:
-    branches: [main]
+    branches: [product/main]
   push:
-    branches: [main]
+    branches: [product/main]
 
 permissions:
   contents: read
@@ -16,8 +17,8 @@ concurrency:
 
 jobs:
   ci:
-    if: github.repository == 'iOfficeAI/aionrs'
-    name: CI (${{ matrix.os }})
+    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main')
+    name: Ki-Model CI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -52,6 +53,9 @@ jobs:
       - name: Run tests (nextest CI profile)
         run: vx just test-ci
 
+      - name: SDK workspace metadata
+        run: vx cargo metadata --locked --format-version 1 --no-deps
+
       - name: Security audit
         run: vx cargo audit
         continue-on-error: true
@@ -69,8 +73,8 @@ jobs:
   # Mirrors the matrix in release.yml so CI catches compile regressions
   # before they reach the release workflow.
   build:
-    if: github.repository == 'iOfficeAI/aionrs'
-    name: Build (${{ matrix.target }})
+    if: github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main')
+    name: Ki-Model Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -121,7 +125,7 @@ jobs:
   # ── Annotate PR / commit with test results ────────────────────────────
   report:
     needs: ci
-    if: github.repository == 'iOfficeAI/aionrs' && (always())
+    if: always() && (github.repository == 'xlihub/Ki-Model' && (github.base_ref == 'product/main' || github.ref == 'refs/heads/product/main'))
     runs-on: ubuntu-latest
     permissions:
       checks: write

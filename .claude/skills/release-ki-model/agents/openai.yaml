@@ -1,0 +1,4 @@
+interface:
+  display_name: 'Ki-Model 发布维护'
+  short_description: '按已确认基准执行 Ki-Model SDK 同步、发布准备与状态恢复'
+  default_prompt: '使用 $release-ki-model 核对 Ki-Model 当前状态并执行已确认的发布维护步骤。'
