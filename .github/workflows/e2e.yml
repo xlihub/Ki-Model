@@ -43,6 +43,7 @@ concurrency:
 
 jobs:
   e2e:
+    if: github.repository == 'iOfficeAI/aionrs'
     name: E2E (${{ matrix.provider }})
     runs-on: ubuntu-latest
     strategy:
@@ -120,7 +121,7 @@ jobs:
 
   report:
     needs: e2e
-    if: always()
+    if: github.repository == 'iOfficeAI/aionrs' && (always())
     runs-on: ubuntu-latest
     permissions:
       checks: write

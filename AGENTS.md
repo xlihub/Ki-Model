@@ -2,6 +2,14 @@
 
 Rules and conventions for AI assistants and contributors working on aionrs.
 
+## Ki-Model 产品维护
+
+本仓库是 `xlihub/Ki-Model`，上游为 `iOfficeAI/aionrs`。`main` 只保存上游历史；产品开发从 `product/main` 建立维护分支，PR base 使用 `product/main`。
+
+涉及候选版本、上游同步、分支保护、CI 或发布交接时，阅读 [Ki-Model 维护指南](docs/ki-model/maintenance.md)。执行已选定基准的同步、版本准备或发布恢复时，使用 [release-ki-model](.claude/skills/release-ki-model/SKILL.md)，按现有 Ki 产品发布技能的确认和状态核验要求操作。
+
+基准和版本状态从维护指南指定的仓库文件及实际 Release 读取；选择例外仅适用于记录中获批准的准确上游 tag/commit。采用新基准时重新核对候选完整性，并按上游 CI 变化维护产品检查。工程文档使用简体中文，描述长期规则；具体版本选择和执行结果保留在基准记录及关联 PR/run/Release 中。
+
 ## Overview
 
 aionrs is a **multi-provider AI agent CLI** written in Rust. It connects to

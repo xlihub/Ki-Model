@@ -17,7 +17,9 @@ concurrency:
 jobs:
   renovate-hakari:
     name: Regenerate Hakari
+    # Upstream condition follows the repository guard.
     if: >-
+      github.repository == 'iOfficeAI/aionrs' &&
       (
         github.event_name == 'workflow_dispatch' ||
         (

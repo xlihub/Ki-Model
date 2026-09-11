@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "repository": "iOfficeAI/aionrs",
+  "tag": "v0.2.11",
+  "peeledCommit": "8e61a90329fa9f67c4fdf7e97fe02c24dba33f75",
+  "selection": {
+    "maintainer": "xlihub",
+    "date": "2026-09-11",
+    "exception": "initial-sdk-source-without-cli-assets",
+    "reason": "与 Ki-Core 当前 SDK pin 一致；维护者明确允许本次以 SDK 源码及验证为基准，接受 CLI 资产缺失。"
+  }
+}
