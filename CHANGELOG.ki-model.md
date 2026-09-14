@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.1.1](https://github.com/xlihub/Ki-Model/compare/ki-model-v0.1.0...ki-model-v0.1.1) (2026-09-14)
+
+
+### Features
+
+* **providers:** add OpenAI gateway options and standard SSE ([#8](https://github.com/xlihub/Ki-Model/issues/8)) ([10fd616](https://github.com/xlihub/Ki-Model/commit/10fd616c4dbfeb2d0aed5bb7e8737fa8d53152d1))
+
+
+### Bug Fixes
+
+* **release:** prepare Ki-Model 0.1.1 automatically ([#9](https://github.com/xlihub/Ki-Model/issues/9)) ([33ad8ac](https://github.com/xlihub/Ki-Model/commit/33ad8ac3af50408efc0829fadbe09dc350dfea86))
+* **release:** query draft releases with push access ([#7](https://github.com/xlihub/Ki-Model/issues/7)) ([c7ca456](https://github.com/xlihub/Ki-Model/commit/c7ca456865beaa4ce3c2010c3775f39b40b3fa6d))
+
 ## 0.1.0 (2026-09-11)
 
 
