@@ -2,7 +2,7 @@ use super::*;
 
 #[cfg(test)]
 mod tests {
-    use super::{Frame, FrameKind, SseBlockFramer, SseLineFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
+    use super::{Frame, FrameKind, SseBlockFramer, SseEventFramer, Utf8StreamDecoder, bedrock_payload_to_frame};
     use base64::Engine as _;
 
     #[test]
@@ -52,11 +52,11 @@ mod tests {
     }
 
     #[test]
-    fn test_sse_line_framer_extracts_data_and_done() {
-        let mut framer = SseLineFramer::default();
+    fn test_sse_event_framer_extracts_data_and_done() {
+        let mut framer = SseEventFramer::default();
 
         let frames = framer.push_text(
-            ": keepalive\n\nignored\ndata: {\"type\":\"chunk\"}\ndata: [DONE]\n",
+            ": keepalive\n\nignored\ndata: {\"type\":\"chunk\"}\n\ndata: [DONE]\n\n",
             "[DONE]",
         );
 
@@ -78,13 +78,13 @@ mod tests {
     }
 
     #[test]
-    fn test_sse_line_framer_keeps_partial_line_buffered() {
-        let mut framer = SseLineFramer::default();
+    fn test_sse_event_framer_keeps_partial_line_buffered() {
+        let mut framer = SseEventFramer::default();
 
         assert!(framer.push_text("data: partial", "[DONE]").is_empty());
 
         assert_eq!(
-            framer.push_text(" line\n", "[DONE]"),
+            framer.push_text(" line\n\n", "[DONE]"),
             vec![Frame {
                 event: None,
                 data: "partial line".to_string(),
@@ -101,18 +101,11 @@ mod tests {
 
         assert_eq!(
             frames,
-            vec![
-                Frame {
-                    event: Some("content_block_delta".to_string()),
-                    data: "first".to_string(),
-                    kind: FrameKind::Data,
-                },
-                Frame {
-                    event: Some("content_block_delta".to_string()),
-                    data: "second".to_string(),
-                    kind: FrameKind::Data,
-                },
-            ]
+            vec![Frame {
+                event: Some("content_block_delta".to_string()),
+                data: "first\nsecond".to_string(),
+                kind: FrameKind::Data,
+            },]
         );
     }
 
@@ -197,5 +190,39 @@ mod tests {
                 kind: FrameKind::Data,
             })
         );
+    }
+}
+
+#[test]
+fn standard_sse_frames_are_independent_of_every_byte_split() {
+    for ending in ["\n", "\r\n", "\r"] {
+        let input = format!(
+            "\u{feff}:comment{ending}{ending}event:custom{ending}data:你好{ending}data:  world {ending}{ending}event:discarded{ending}{ending} data:ignored{ending}data:[DONE]{ending}{ending}"
+        );
+        let bytes = input.as_bytes();
+        for split in 0..=bytes.len() {
+            let mut decoder = Utf8StreamDecoder::default();
+            let mut framer = SseEventFramer::default();
+            let mut actual = Vec::new();
+            for chunk in [&bytes[..split], &bytes[split..]] {
+                actual.extend(framer.push_text(&decoder.push(chunk), "[DONE]"));
+            }
+            assert_eq!(
+                actual,
+                vec![
+                    Frame {
+                        event: Some("custom".into()),
+                        data: "你好\n world ".into(),
+                        kind: FrameKind::Data
+                    },
+                    Frame {
+                        event: None,
+                        data: "[DONE]".into(),
+                        kind: FrameKind::Done
+                    },
+                ],
+                "ending={ending:?}, split={split}"
+            );
+        }
     }
 }

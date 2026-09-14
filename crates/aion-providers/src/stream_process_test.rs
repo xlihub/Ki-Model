@@ -1,4 +1,5 @@
 use super::*;
+use crate::error_redaction::ErrorRedactor;
 
 #[cfg(test)]
 mod tests {
@@ -110,7 +111,7 @@ mod tests {
             .finish();
         let _guard = subscriber::set_default(log_subscriber);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
         let summary = provider_stream_summary(&writer);
@@ -137,7 +138,7 @@ mod tests {
             .finish();
         let _guard = subscriber::set_default(log_subscriber);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
         let summary = provider_stream_summary(&writer);
@@ -170,7 +171,7 @@ mod tests {
         let response = mock_response(format!("data: {content}\n\n").into_bytes()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -193,7 +194,7 @@ mod tests {
         let response = mock_response(format!("data: {content}\n\n").into_bytes()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -207,9 +208,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn openai_sse_stream_cut_off_after_reasoning_only_fails_empty() {
-        // Thinking deltas alone must not block a retry: no answer content
-        // reached the consumer, so the cut-off stream is safe to re-run.
+    async fn openai_sse_stream_cut_off_after_reasoning_only_fails_partial() {
+        // Delivered reasoning must not be replayed after a disconnect.
         let reasoning = json!({
             "choices": [{
                 "delta": {"reasoning_content": "pondering"},
@@ -219,7 +219,7 @@ mod tests {
         let response = mock_response(format!("data: {reasoning}\n\n").into_bytes()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -227,7 +227,7 @@ mod tests {
         assert!(matches!(&events[0], LlmEvent::ThinkingDelta(text) if text == "pondering"));
         assert!(matches!(
             outcome,
-            StreamOutcome::FailedEmpty(ProviderError::Connection(_))
+            StreamOutcome::FailedPartial(ProviderError::Connection(_))
         ));
     }
 
@@ -239,7 +239,7 @@ mod tests {
         let response = mock_response(format!("data: {error}\n\ndata: [DONE]\n\n").into_bytes()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -265,7 +265,7 @@ mod tests {
         let response = mock_response(format!("data: {content}\n\ndata: {error}\n\n").into_bytes()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_sse_stream(response, &tx, false).await;
+        let outcome = process_openai_sse_stream(response, &tx, false, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -347,7 +347,7 @@ mod tests {
         let response = mock_response(body.as_bytes().to_vec()).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_responses_sse_stream(response, &tx).await;
+        let outcome = process_openai_responses_sse_stream(response, &tx, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 
@@ -368,7 +368,7 @@ mod tests {
         let response = mock_response(body).await;
         let (tx, rx) = mpsc::channel(8);
 
-        let outcome = process_openai_responses_sse_stream(response, &tx).await;
+        let outcome = process_openai_responses_sse_stream(response, &tx, &ErrorRedactor::default()).await;
         drop(tx);
         let events = collect_events(rx).await;
 

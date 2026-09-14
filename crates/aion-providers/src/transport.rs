@@ -7,6 +7,8 @@ use serde_json::Value;
 
 use crate::bedrock::BedrockTransportState;
 use crate::error::{ProviderError, provider_error_from_json_body};
+use crate::error_redaction::ErrorRedactor;
+use crate::openai_options::{OpenAIConfigError, OpenAIOptions};
 use crate::openai_responses_projector::OpenAiResponsesProjector;
 use crate::projector::{
     AnthropicWireProjector, OpenAiProjector, ResolvedToolWireShape, WireParams, WireProvider,
@@ -37,6 +39,7 @@ pub(crate) enum ProviderTransport {
 
 #[derive(Clone)]
 pub(crate) struct OpenAiTransport {
+    headers: Option<HeaderMap>,
     client: reqwest::Client,
     api_key: String,
     base_url: String,
@@ -70,8 +73,23 @@ pub(crate) struct ProjectedHttpRequest {
 }
 
 impl OpenAiTransport {
+    pub(crate) fn with_options(
+        api_key: Option<&str>,
+        base_url: &str,
+        options: OpenAIOptions,
+    ) -> Result<Self, OpenAIConfigError> {
+        let headers = options.request_headers(api_key)?;
+        Ok(Self {
+            headers: Some(headers),
+            client: options.client.unwrap_or_default(),
+            api_key: String::new(),
+            base_url: normalize_openai_base_url(base_url),
+        })
+    }
+
     pub(crate) fn new(api_key: &str, base_url: &str) -> Self {
         Self {
+            headers: None,
             client: reqwest::Client::new(),
             api_key: api_key.to_string(),
             base_url: normalize_openai_base_url(base_url),
@@ -84,12 +102,18 @@ impl OpenAiTransport {
         compat: &ProviderCompat,
         tool_wire_shape: ResolvedToolWireShape,
     ) -> Result<ProjectedHttpRequest, ProviderError> {
-        let mut headers = HeaderMap::new();
-        let bearer = format!("Bearer {}", self.api_key);
-        let auth = HeaderValue::from_str(&bearer)
-            .map_err(|error| ProviderError::Connection(format!("Invalid authorization header: {error}")))?;
-        headers.insert(AUTHORIZATION, auth);
-        headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        let headers = if let Some(headers) = &self.headers {
+            headers.clone()
+        } else {
+            let mut headers = HeaderMap::new();
+            let bearer = format!("Bearer {}", self.api_key);
+            let mut auth = HeaderValue::from_str(&bearer)
+                .map_err(|error| ProviderError::Connection(format!("Invalid authorization header: {error}")))?;
+            auth.set_sensitive(true);
+            headers.insert(AUTHORIZATION, auth);
+            headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            headers
+        };
 
         Ok(ProjectedHttpRequest {
             url: join_base_url_and_api_path(&self.base_url, compat.openai_api_path()),
@@ -145,6 +169,13 @@ impl AnthropicTransport {
 }
 
 impl ProviderTransport {
+    pub(crate) fn error_redactor(&self) -> ErrorRedactor {
+        match self {
+            Self::OpenAi(transport) => ErrorRedactor::new(transport.headers.as_ref(), &transport.api_key),
+            _ => ErrorRedactor::default(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn wire_protocol(&self, compat: &ProviderCompat) -> WireProtocol {
         match self {
@@ -167,7 +198,7 @@ impl ProviderTransport {
     pub(crate) fn decoder(&self, compat: &ProviderCompat) -> StreamDecoder {
         match self {
             Self::OpenAi(_) => match compat.openai_api_mode() {
-                OpenAiApiMode::ChatCompletions => StreamDecoder::OpenAiSseLine {
+                OpenAiApiMode::ChatCompletions => StreamDecoder::OpenAiChatCompletionsSse {
                     auto_tool_id: compat.auto_tool_id(),
                 },
                 OpenAiApiMode::Responses => StreamDecoder::OpenAiResponsesSse,
@@ -253,13 +284,15 @@ impl ProviderTransport {
 }
 
 fn join_base_url_and_api_path(base_url: &str, api_path: &str) -> String {
-    let base = base_url.trim_end_matches('/');
     let path = api_path.trim_start_matches('/');
     if path.is_empty() {
-        base.to_string()
-    } else {
-        format!("{base}/{path}")
+        return base_url.to_string();
     }
+    // Insert the API path before the base URL's query/fragment. Leave the
+    // suffix byte-for-byte intact, including encoded values and trailing '/'.
+    let suffix_start = base_url.find(['?', '#']).unwrap_or(base_url.len());
+    let (base, suffix) = base_url.split_at(suffix_start);
+    format!("{}/{path}{suffix}", base.trim_end_matches('/'))
 }
 
 fn normalize_openai_base_url(base_url: &str) -> String {

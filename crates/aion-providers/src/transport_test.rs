@@ -57,7 +57,7 @@ mod tests {
         assert_eq!(transport.wire_protocol(&compat), WireProtocol::OpenAiChat);
         assert_eq!(
             transport.decoder(&compat),
-            StreamDecoder::OpenAiSseLine { auto_tool_id: true }
+            StreamDecoder::OpenAiChatCompletionsSse { auto_tool_id: true }
         );
     }
 
