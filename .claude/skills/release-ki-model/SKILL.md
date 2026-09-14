@@ -43,7 +43,7 @@ commit、just push、创建 PR、合并 PR、dispatch/retry、删除 worktree/br
 
 建设或更新发布配置时，优先复用选定 aionrs 的 Release Please 与 release workflow 的构建、打包、checksum 和资产汇总，调整 Ki 产品独立版本、tag、branch、基准映射、审批和不可变资产语义。
 
-维护者选定的目标写入产品专用 Release Please 配置的 `release-as`，经普通 PR 合入后显式调用 `update-pr`；不在长期文档中固定目标版本。产品 SemVer 独立于 Cargo workspace version；后续版本须高于已发布稳定版，不得复用已有 tag 或历史映射。采用新上游的同步 PR 应先合并；版本 PR 按实际 Release Please 协议提升 pending、追加新版本映射，保持已发布历史不变。版本准备文件不代表发布成功，须以实际 Release 及其 commit 的映射判定已发布状态。保留可解析分支、标题、正文区块和 autorelease 标签；确定性状态机缺口由普通修复 PR 处理。
+维护者选定的目标写入产品专用 Release Please 配置的 `release-as`，经普通 PR 合入后核对自动版本准备的 run 和版本 PR；恢复入口 `update-pr` 的条件见维护指南。不在长期文档中固定目标版本。产品 SemVer 独立于 Cargo workspace version；后续版本须高于已发布稳定版，不得复用已有 tag 或历史映射。采用新上游的同步 PR 应先合并；版本 PR 按实际 Release Please 协议提升 pending、追加新版本映射，保持已发布历史不变。版本准备文件不代表发布成功，须以实际 Release 及其 commit 的映射判定已发布状态。保留可解析分支、标题、正文区块和 autorelease 标签；确定性状态机缺口由普通修复 PR 处理。
 
 版本 PR 检查通过并经确认合并后，核对 release commit。tag 与 Draft Release 由 Release Please 在 `ki-model-stable` Environment 获维护者审批后创建，并显式触发稳定版构建；全部产物上传和下载核验通过后才公开 Release；不手工创建产品 tag，不把 GITHUB_TOKEN 创建 tag 等同于另一个 workflow 已启动。
 
