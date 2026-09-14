@@ -90,7 +90,7 @@ SDK 发布完成条件以目标 tag 声明的来源清单、crate、适用测试
 
 产品专用配置使用 `release-please-config.ki-model.json` 与 `.release-please-manifest.ki-model.json`。维护者选定版本后，通过普通维护 PR 更新配置中 `packages["."].release-as`；该值须高于当前产品版本。`0.0.0` 只表示首次发布前的初始化状态，不是已发布版本。
 
-发布开关为仓库变量 `KI_ENABLE_RELEASE_AUTOMATION=true`，Environment 和 tag 保护配置完成后才启用。版本选择 PR 合入后，调用 `ki-model-release-please.yml` 的 `update-pr` 操作。Release Please 生成独立版本 PR，更新产品版本、manifest 和 CHANGELOG；后续步骤提升 pending 并追加来源映射。普通产品提交不自动选择下一版本；只有明确调用 `update-pr` 才准备版本 PR。
+发布开关为仓库变量 `KI_ENABLE_RELEASE_AUTOMATION=true`，Environment 和 tag 保护配置完成后才启用。维护者选择的 `release-as` 高于当前产品版本时，普通 product/main 提交自动创建或更新独立版本 PR；版本选择 PR 的合并也属于此入口。Release Please 更新产品版本、manifest 和 CHANGELOG；后续步骤提升 pending 并追加来源映射。没有更高的已选版本时，普通提交跳过版本准备；版本合并提交只进入审批发布，不生成下一版本 PR。需要恢复版本准备时，可显式调用 `ki-model-release-please.yml` 的 `update-pr` 操作，该入口仍要求已选择更高的产品版本。
 
 ```bash
 gh workflow run ki-model-release-please.yml --repo xlihub/Ki-Model --ref product/main --field operation=update-pr

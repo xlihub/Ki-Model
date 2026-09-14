@@ -22,7 +22,12 @@ concurrency:
 jobs:
   update-pr:
     name: Prepare Ki-Model version PR
-    if: github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main' && github.event_name == 'workflow_dispatch' && inputs.operation == 'update-pr'
+    if: >-
+      github.repository == 'xlihub/Ki-Model' && vars.KI_ENABLE_RELEASE_AUTOMATION == 'true' && github.ref == 'refs/heads/product/main' &&
+      ((github.event_name == 'workflow_dispatch' && inputs.operation == 'update-pr') ||
+       (github.event_name == 'push' &&
+        !startsWith(github.event.head_commit.message, 'chore: release') &&
+        !startsWith(github.event.head_commit.message, 'chore(product/main): release')))
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -39,6 +44,10 @@ jobs:
         run: |
           set -euo pipefail
           version="$(jq -er '.packages["."]["release-as"]' release-please-config.ki-model.json)"
+          if [[ "$GITHUB_EVENT_NAME" == push && "$version" == "$(cat ki-model-version.txt)" ]]; then
+            echo 'No newer maintainer-selected version; skipping version PR preparation.'
+            exit 0
+          fi
           python - "$version" <<'PY'
           import re, sys
           from pathlib import Path
@@ -54,6 +63,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
       - uses: googleapis/release-please-action@v5
         id: release-please
+        if: steps.selected.outputs.version
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           target-branch: product/main
@@ -89,7 +99,7 @@ jobs:
           RELEASE_BRANCH: ${{ fromJSON(steps.release-please.outputs.pr).headBranchName }}
         run: gh workflow run ki-model-ci.yml --repo "$GITHUB_REPOSITORY" --ref "$RELEASE_BRANCH"
       - name: Require a version PR
-        if: '!steps.release-please.outputs.pr'
+        if: steps.selected.outputs.version && !steps.release-please.outputs.pr
         run: |
           echo 'Release Please did not produce a version PR; inspect its output before continuing.' >&2
           exit 1
